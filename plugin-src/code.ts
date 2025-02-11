@@ -30,6 +30,7 @@ interface RadiusCheckResult {
   nodeName: string;
   nodeType: string;
   cornerRadius: number | number[];
+  hasDecimal: boolean;
   issues: Array<{
     type: 'inconsistent' | 'non-standard';
     current: number | number[];
@@ -212,17 +213,42 @@ async function fixTextCapitalization(nodeId: string, suggestion: string) {
 
 // 跳转到指定节点
 async function goToNode(nodeId: string) {
-  const node = await figma.getNodeByIdAsync(nodeId);
-  if (node && 'type' in node) {
-    const sceneNode = node as SceneNode;
-    // 选中节点
-    figma.currentPage.selection = [sceneNode];
-    
-    // 将视图居中到节点
-    figma.viewport.scrollAndZoomIntoView([sceneNode]);
-    
-    // 闪烁提示
-    figma.notify('Navigated to text layer');
+  try {
+    const node = await figma.getNodeByIdAsync(nodeId);
+    if (!node) {
+      console.error('Node not found:', nodeId);
+      figma.notify('找不到指定的图层');
+      return;
+    }
+
+    if ('type' in node) {
+      const sceneNode = node as SceneNode;
+      
+      // 确保节点所在的页面是当前页面
+      let currentNode: BaseNode | null = sceneNode;
+      while (currentNode && currentNode.type !== 'PAGE') {
+        currentNode = currentNode.parent;
+      }
+      
+      if (currentNode && currentNode.type === 'PAGE') {
+        // 使用异步方法设置当前页面
+        await figma.setCurrentPageAsync(currentNode as PageNode);
+      }
+
+      // 选中节点
+      figma.currentPage.selection = [sceneNode];
+      
+      // 将视图居中到节点
+      figma.viewport.scrollAndZoomIntoView([sceneNode]);
+      
+      // 闪烁提示
+      figma.notify('已定位到图层: ' + sceneNode.name);
+    } else {
+      figma.notify('无法定位到该类型的图层');
+    }
+  } catch (error) {
+    console.error('Error navigating to node:', error);
+    figma.notify('定位图层时出错');
   }
 }
 
@@ -244,56 +270,31 @@ async function checkNodeRadius(node: SceneNode): Promise<RadiusCheckResult | nul
   // 只检查矩形、自动布局和框架
   if (!('cornerRadius' in node)) return null;
 
-  const issues: RadiusCheckResult['issues'] = [];
   const radius = (node as any).cornerRadius;
   
   if (radius === undefined) return null;
 
-  // 检查是否使用了混合圆角
-  if (Array.isArray(radius)) {
-    const uniqueRadii = [...new Set(radius)];
-    if (uniqueRadii.length > 1) {
-      issues.push({
-        type: 'inconsistent',
-        current: radius,
-        suggestion: radius[0] // 建议使用第一个值
-      });
-    }
-    // 检查每个圆角值是否标准
-    radius.forEach(r => {
-      if (!isStandardRadius(r)) {
-        const closestStandard = STANDARD_RADIUS.reduce((prev, curr) =>
-          Math.abs(curr - r) < Math.abs(prev - r) ? curr : prev
-        );
-        issues.push({
-          type: 'non-standard',
-          current: r,
-          suggestion: closestStandard
-        });
-      }
-    });
-  } else if (typeof radius === 'number' && radius !== 0) {
-    // 检查单个圆角值是否标准
-    if (!isStandardRadius(radius)) {
-      const closestStandard = STANDARD_RADIUS.reduce((prev, curr) =>
-        Math.abs(curr - radius) < Math.abs(prev - radius) ? curr : prev
-      );
-      issues.push({
-        type: 'non-standard',
-        current: radius,
-        suggestion: closestStandard
-      });
-    }
-  }
+  // 确保返回的数据是可序列化的，并忽略0值
+  const cornerRadius = Array.isArray(radius) 
+    ? radius.map(r => typeof r === 'number' ? r : 0).filter(r => r !== 0)
+    : typeof radius === 'number' ? radius : 0;
 
-  if (issues.length === 0) return null;
+  // 如果所有圆角都是0，则返回null
+  if (Array.isArray(cornerRadius) && cornerRadius.length === 0) return null;
+  if (!Array.isArray(cornerRadius) && cornerRadius === 0) return null;
+
+  // 检查是否有小数点值
+  const hasDecimal = Array.isArray(cornerRadius)
+    ? cornerRadius.some(r => !Number.isInteger(r))
+    : !Number.isInteger(cornerRadius);
 
   return {
     nodeId: node.id,
     nodeName: node.name,
     nodeType: node.type,
-    cornerRadius: radius,
-    issues
+    cornerRadius,
+    hasDecimal,
+    issues: []
   };
 }
 
@@ -363,19 +364,48 @@ figma.ui.onmessage = async (msg: UIMessage) => {
         return;
       }
 
-      for (const node of selection) {
-        await checkRadiusRecursively(node, radiusResults);
-      }
+      try {
+        for (const node of selection) {
+          await checkRadiusRecursively(node, radiusResults);
+        }
 
-      figma.ui.postMessage({
-        type: 'radius-review-complete',
-        results: radiusResults
-      });
+        // 过滤掉所有圆角为0的结果
+        const filteredResults = radiusResults.filter(result => {
+          if (Array.isArray(result.cornerRadius)) {
+            return result.cornerRadius.length > 0;
+          }
+          return result.cornerRadius !== 0;
+        });
 
-      if (radiusResults.length > 0) {
-        figma.notify(`Found ${radiusResults.length} radius issues`);
-      } else {
-        figma.notify('No radius issues found');
+        // 确保所有数据都是可序列化的
+        const serializedResults = filteredResults.map(result => ({
+          ...result,
+          cornerRadius: Array.isArray(result.cornerRadius)
+            ? result.cornerRadius.map(r => Number(r))
+            : Number(result.cornerRadius),
+          hasDecimal: result.hasDecimal
+        }));
+
+        if (serializedResults.length > 0) {
+          figma.ui.postMessage({
+            type: 'radius-review-complete',
+            results: serializedResults
+          });
+          figma.notify(`Found ${serializedResults.length} elements with non-zero radius`);
+        } else {
+          figma.notify('No elements with non-zero radius found');
+          figma.ui.postMessage({
+            type: 'radius-review-complete',
+            results: []
+          });
+        }
+      } catch (error) {
+        console.error('Error during radius review:', error);
+        figma.notify('Error during radius review');
+        figma.ui.postMessage({
+          type: 'radius-review-complete',
+          results: []
+        });
       }
       break;
     case 'fix-radius':
