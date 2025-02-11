@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>UI Review Plugin</title>
+  <script>
+    // This will be replaced by the Next.js bundle
+    window.onmessage = async (event) => {
+      const message = event.data.pluginMessage;
+      if (!message) return;
+
+      switch (message.type) {
+        case 'selection-update':
+          // TODO: 处理选择更新
+          console.log('Selection updated:', message.selection);
+          break;
+        case 'review-complete':
+          // TODO: 处理审查结果
+          console.log('Review completed:', message.results);
+          break;
+        default:
+          console.log('Unknown message type:', message.type);
+      }
+    };
+  </script>
+</head>
+<body>
+  <div id="root"></div>
+</body>
+</html> 

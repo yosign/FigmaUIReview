@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>UI Review Plugin</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 12px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background-color: white;
+      color: #333;
+    }
+
+    .space-y-6 > * + * {
+      margin-top: 0.75rem;
+    }
+
+    .section {
+      margin-bottom: 0.75rem;
+    }
+
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.5rem;
+    }
+
+    .section-content {
+      padding: 0;
+    }
+
+    .btn {
+      display: inline-block;
+      padding: 0.5rem 1rem;
+      font-weight: 500;
+      text-align: center;
+      border-radius: 4px;
+      transition: all 0.2s;
+      cursor: pointer;
+      width: 100%;
+      border: none;
+      outline: none;
+      background-color: #000;
+      color: white;
+    }
+
+    .btn:hover {
+      background-color: #333;
+    }
+
+    .btn:disabled {
+      background-color: #ccc;
+      cursor: not-allowed;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 0.25rem 0.5rem;
+      font-size: 0.75rem;
+      font-weight: 500;
+      border-radius: 4px;
+      background-color: #f3f4f6;
+      color: #000;
+    }
+
+    .style-list {
+      max-height: 180px;
+      overflow-y: auto;
+      margin-bottom: 0.75rem;
+      border: 1px solid #e5e7eb;
+      border-radius: 4px;
+      padding: 0.25rem;
+      background: white;
+    }
+
+    .style-item {
+      display: flex;
+      align-items: center;
+      padding: 0.375rem;
+      border-bottom: 1px solid #e5e7eb;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .style-item:last-child {
+      border-bottom: none;
+    }
+
+    .style-checkbox {
+      margin-right: 0.5rem;
+      width: 14px;
+      height: 14px;
+      cursor: pointer;
+    }
+
+    .issue-item {
+      background-color: #f9fafb;
+      border-radius: 4px;
+      margin-bottom: 0.5rem;
+      padding: 0.5rem;
+    }
+
+    .issue-header {
+      margin-bottom: 0.5rem;
+    }
+
+    .issue-text {
+      font-family: monospace;
+      background-color: #fff;
+      padding: 0.375rem;
+      border-radius: 4px;
+      margin: 0.375rem 0;
+      white-space: pre-wrap;
+      border: 1px solid #e5e7eb;
+    }
+
+    .fix-button {
+      background-color: #000;
+      color: white;
+      padding: 0.25rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      cursor: pointer;
+      border: none;
+    }
+
+    .fix-button:hover {
+      background-color: #333;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0.375rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .stat-item {
+      background-color: #f9fafb;
+      padding: 0.5rem;
+      border-radius: 4px;
+      text-align: center;
+    }
+
+    .stat-value {
+      font-size: 1.125rem;
+      font-weight: 600;
+      color: #000;
+      margin-bottom: 0.125rem;
+    }
+
+    .stat-label {
+      font-size: 0.75rem;
+      color: #666;
+    }
+
+    .logo {
+      height: 36px;
+      width: auto;
+      margin-bottom: 0.75rem;
+      display: block;
+    }
+
+    .logo > div {
+      height: 36px;
+    }
+
+    .logo svg {
+      height: 36px;
+      width: auto;
+      max-width: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script>
+    function initializeReact() {
+      if (!window.React || !window.ReactDOM) {
+        setTimeout(initializeReact, 100);
+        return;
+      }
+
+      const e = React.createElement;
+      const container = document.getElementById('root');
+      if (!container) {
+        console.error('Root element not found');
+        return;
+      }
+
+      const root = ReactDOM.createRoot(container);
+
+      function App() {
+        const [selection, setSelection] = React.useState([]);
+        const [results, setResults] = React.useState([]);
+        const [isReviewing, setIsReviewing] = React.useState(false);
+        const [textStyles, setTextStyles] = React.useState([]);
+        const [selectedStyles, setSelectedStyles] = React.useState([]);
+        const [stats, setStats] = React.useState({
+          totalNodes: 0,
+          textNodes: 0,
+          totalCharacters: 0,
+          totalWords: 0
+        });
+
+        console.log('Current textStyles:', textStyles);
+        console.log('Current selectedStyles:', selectedStyles);
+
+        React.useEffect(() => {
+          function handleMessage(event) {
+            const message = event.data.pluginMessage;
+            if (!message) return;
+
+            console.log('Received message:', message);
+
+            switch (message.type) {
+              case 'selection-update':
+                console.log('Updating selection:', message.selection);
+                setSelection(message.selection);
+                setStats(message.stats);
+                break;
+              case 'review-complete':
+                console.log('Review completed:', message.results);
+                setResults(message.results);
+                setIsReviewing(false);
+                break;
+              case 'text-styles-update':
+                console.log('Updating text styles:', message.styles);
+                if (Array.isArray(message.styles)) {
+                  setTextStyles(message.styles);
+                  console.log('Text styles updated:', message.styles);
+                } else {
+                  console.warn('Received invalid text styles:', message.styles);
+                }
+                break;
+              default:
+                console.log('Unknown message type:', message.type);
+            }
+          }
+
+          window.addEventListener('message', handleMessage);
+
+          console.log('Sending init message');
+          parent.postMessage({ pluginMessage: { type: 'init' } }, '*');
+          
+          console.log('Requesting text styles');
+          parent.postMessage({ pluginMessage: { type: 'get-text-styles' } }, '*');
+
+          return () => {
+            window.removeEventListener('message', handleMessage);
+          };
+        }, []);
+
+        const handleStyleToggle = (styleId) => {
+          setSelectedStyles(prev => {
+            if (prev.includes(styleId)) {
+              return prev.filter(id => id !== styleId);
+            } else {
+              return [...prev, styleId];
+            }
+          });
+        };
+
+        const handleStartReview = () => {
+          setIsReviewing(true);
+          setResults([]);
+          parent.postMessage({
+            pluginMessage: {
+              type: 'start-review',
+              selectedStyles
+            }
+          }, '*');
+        };
+
+        const handleFixIssue = (nodeId, suggestion) => {
+          parent.postMessage({
+            pluginMessage: {
+              type: 'fix-text',
+              nodeId,
+              suggestion
+            }
+          }, '*');
+        };
+
+        return e('div', { className: 'space-y-6' },
+          // Logo
+          e('div', { className: 'logo' },
+            e('div', {
+              dangerouslySetInnerHTML: {
+                __html: `<svg width="770" height="300" viewBox="0 0 770 300" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M35 162H305" stroke="black" style="stroke:black;stroke-opacity:1;" stroke-width="36"/>
+                  <path d="M74.541 257.459L265.46 66.5402" stroke="black" style="stroke:black;stroke-opacity:1;" stroke-width="36"/>
+                  <path d="M74.541 66.541L265.46 257.46" stroke="black" style="stroke:black;stroke-opacity:1;" stroke-width="36"/>
+                  <path d="M170 27L170 162" stroke="black" style="stroke:black;stroke-opacity:1;" stroke-width="36"/>
+                  <path d="M655.104 267.999L638.184 218.859H652.134L664.014 254.319L659.154 254.229L672.384 218.859H684.084L697.224 254.229L692.364 254.319L704.244 218.859H718.284L701.274 267.999H689.574L675.894 230.019H680.574L666.804 267.999H655.104Z" fill="#7D41E8" style="fill:#7D41E8;fill:color(display-p3 0.4885 0.2552 0.9084);fill-opacity:1;"/>
+                  <path d="M613.795 269.079C608.575 269.079 604.045 267.939 600.205 265.659C596.365 263.319 593.395 260.199 591.295 256.299C589.195 252.399 588.145 248.079 588.145 243.339C588.145 238.419 589.225 234.039 591.385 230.199C593.605 226.359 596.575 223.329 600.295 221.109C604.015 218.889 608.215 217.779 612.895 217.779C616.795 217.779 620.245 218.409 623.245 219.669C626.245 220.869 628.765 222.579 630.805 224.799C632.905 227.019 634.495 229.599 635.575 232.539C636.655 235.419 637.195 238.569 637.195 241.989C637.195 242.949 637.135 243.909 637.015 244.869C636.955 245.769 636.805 246.549 636.565 247.209H599.755V237.309H628.915L622.525 241.989C623.125 239.409 623.095 237.129 622.435 235.149C621.775 233.109 620.605 231.519 618.925 230.379C617.305 229.179 615.295 228.579 612.895 228.579C610.555 228.579 608.545 229.149 606.865 230.289C605.185 231.429 603.925 233.109 603.085 235.329C602.245 237.549 601.915 240.249 602.095 243.429C601.855 246.189 602.185 248.619 603.085 250.719C603.985 252.819 605.365 254.469 607.225 255.669C609.085 256.809 611.335 257.379 613.975 257.379C616.375 257.379 618.415 256.899 620.095 255.939C621.835 254.979 623.185 253.659 624.145 251.979L634.945 257.109C633.985 259.509 632.455 261.609 630.355 263.409C628.315 265.209 625.885 266.619 623.065 267.639C620.245 268.599 617.155 269.079 613.795 269.079Z" fill="#7D41E8" style="fill:#7D41E8;fill:color(display-p3 0.4885 0.2552 0.9084);fill-opacity:1;"/>
+                  <path d="M569.746 267.999V218.859H583.246V267.999H569.746ZM569.746 214.449V200.949H583.246V214.449H569.746Z" fill="#7D41E8" style="fill:#7D41E8;fill:color(display-p3 0.4885 0.2552 0.9084);fill-opacity:1;"/>
+                  <path d="M535.752 267.999L516.402 218.859H530.982L544.392 256.029H538.812L552.222 218.859H566.802L547.452 267.999H535.752Z" fill="#7D41E8" style="fill:#7D41E8;fill:color(display-p3 0.4885 0.2552 0.9084);fill-opacity:1;"/>
+                  <path d="M492.892 269.079C487.672 269.079 483.142 267.939 479.302 265.659C475.462 263.319 472.492 260.199 470.392 256.299C468.292 252.399 467.242 248.079 467.242 243.339C467.242 238.419 468.322 234.039 470.482 230.199C472.702 226.359 475.672 223.329 479.392 221.109C483.112 218.889 487.312 217.779 491.992 217.779C495.892 217.779 499.342 218.409 502.342 219.669C505.342 220.869 507.862 222.579 509.902 224.799C512.002 227.019 513.592 229.599 514.672 232.539C515.752 235.419 516.292 238.569 516.292 241.989C516.292 242.949 516.232 243.909 516.112 244.869C516.052 245.769 515.902 246.549 515.662 247.209H478.852V237.309H508.012L501.622 241.989C502.222 239.409 502.192 237.129 501.532 235.149C500.872 233.109 499.702 231.519 498.022 230.379C496.402 229.179 494.392 228.579 491.992 228.579C489.652 228.579 487.642 229.149 485.962 230.289C484.282 231.429 483.022 233.109 482.182 235.329C481.342 237.549 481.012 240.249 481.192 243.429C480.952 246.189 481.282 248.619 482.182 250.719C483.082 252.819 484.462 254.469 486.322 255.669C488.182 256.809 490.432 257.379 493.072 257.379C495.472 257.379 497.512 256.899 499.192 255.939C500.932 254.979 502.282 253.659 503.242 251.979L514.042 257.109C513.082 259.509 511.552 261.609 509.452 263.409C507.412 265.209 504.982 266.619 502.162 267.639C499.342 268.599 496.252 269.079 492.892 269.079Z" fill="#7D41E8" style="fill:#7D41E8;fill:color(display-p3 0.4885 0.2552 0.9084);fill-opacity:1;"/>
+                  <path d="M415.908 267.999V200.949H441.558C446.178 200.949 450.258 201.759 453.798 203.379C457.398 204.999 460.218 207.399 462.258 210.579C464.298 213.759 465.318 217.689 465.318 222.369C465.318 226.929 464.268 230.829 462.168 234.069C460.068 237.249 457.248 239.649 453.708 241.269L469.008 267.999H453.348L436.788 238.389L445.788 243.699H429.858V267.999H415.908ZM429.858 231.549H441.648C443.628 231.549 445.338 231.159 446.778 230.379C448.218 229.599 449.328 228.519 450.108 227.139C450.948 225.759 451.368 224.169 451.368 222.369C451.368 220.509 450.948 218.889 450.108 217.509C449.328 216.129 448.218 215.049 446.778 214.269C445.338 213.489 443.628 213.099 441.648 213.099H429.858V231.549Z" fill="#7D41E8" style="fill:#7D41E8;fill:color(display-p3 0.4885 0.2552 0.9084);fill-opacity:1;"/>
+                  <path d="M393.068 267.999V200.949H407.018V267.999H393.068Z" fill="#7D41E8" style="fill:#7D41E8;fill:color(display-p3 0.4885 0.2552 0.9084);fill-opacity:1;"/>
+                  <path d="M357.581 269.079C352.301 269.079 347.591 267.969 343.451 265.749C339.311 263.529 336.041 260.499 333.641 256.659C331.301 252.759 330.131 248.349 330.131 243.429V200.949H344.081V242.529C344.081 245.169 344.651 247.569 345.791 249.729C346.991 251.829 348.611 253.479 350.651 254.679C352.691 255.879 355.001 256.479 357.581 256.479C360.221 256.479 362.531 255.879 364.511 254.679C366.551 253.479 368.141 251.829 369.281 249.729C370.481 247.569 371.081 245.169 371.081 242.529V200.949H385.031V243.429C385.031 248.349 383.831 252.759 381.431 256.659C379.091 260.499 375.851 263.529 371.711 265.749C367.571 267.969 362.861 269.079 357.581 269.079Z" fill="#7D41E8" style="fill:#7D41E8;fill:color(display-p3 0.4885 0.2552 0.9084);fill-opacity:1;"/>
+                </svg>`
+              }
+            })
+          ),
+          
+          // 配置区域
+          e('div', { className: 'section' },
+            e('div', { className: 'section-header' },
+              e('h2', { className: 'text-base font-semibold' }, 'Configuration')
+            ),
+            e('div', { className: 'section-content' },
+              e('p', { className: 'text-sm text-muted mb-2' }, 'Select text styles to check'),
+              e('div', null,
+                textStyles.length === 0 
+                  ? e('p', { className: 'text-muted text-center text-sm' }, 'No text styles found')
+                  : e('div', { className: 'style-list' },
+                      textStyles.map(style =>
+                        e('label', {
+                          key: style.id,
+                          className: 'style-item',
+                          onClick: (e) => {
+                            e.preventDefault();
+                            handleStyleToggle(style.id);
+                          }
+                        },
+                          e('input', {
+                            type: 'checkbox',
+                            className: 'style-checkbox',
+                            checked: selectedStyles.includes(style.id),
+                            onChange: () => handleStyleToggle(style.id)
+                          }),
+                          e('span', { className: 'style-name' }, style.name || 'Unnamed Style')
+                        )
+                      )
+                  )
+              ),
+              e('button', {
+                onClick: handleStartReview,
+                className: 'btn mt-3',
+                disabled: isReviewing
+              }, isReviewing ? 'Reviewing...' : 'Start Review')
+            )
+          ),
+
+          // 选择区域
+          selection.length > 0 && e('div', { className: 'section' },
+            e('div', { className: 'section-header' },
+              e('h2', { className: 'text-base font-semibold' }, 'Selected Elements'),
+              e('span', { className: 'badge' }, `${selection.length} items`)
+            ),
+            e('div', { className: 'section-content' },
+              e('div', { className: 'stats' },
+                e('div', { className: 'stat-item' },
+                  e('div', { className: 'stat-value' }, stats.textNodes),
+                  e('div', { className: 'stat-label' }, 'Text Layers')
+                ),
+                e('div', { className: 'stat-item' },
+                  e('div', { className: 'stat-value' }, stats.totalNodes),
+                  e('div', { className: 'stat-label' }, 'Total Layers')
+                )
+              ),
+              e('div', { className: 'divide-y' },
+                selection.map(item =>
+                  e('div', {
+                    key: item.id,
+                    className: 'py-2 flex justify-between items-center'
+                  },
+                    e('div', { className: 'space-y-1' },
+                      e('div', { className: 'font-medium text-sm' }, item.name),
+                      e('div', { className: 'text-xs text-muted' }, item.type)
+                    )
+                  )
+                )
+              )
+            )
+          ),
+
+          // 结果区域
+          (results.length > 0 || isReviewing) && e('div', { className: 'section' },
+            e('div', { className: 'section-header' },
+              e('h2', { className: 'text-base font-semibold' }, 'Review Results'),
+              results.length > 0 && e('span', { className: 'badge' }, `${results.length} issues`)
+            ),
+            e('div', { className: 'section-content' },
+              isReviewing
+                ? e('div', { className: 'text-center py-3' },
+                    e('p', { className: 'text-muted text-sm' }, 'Reviewing...')
+                  )
+                : results.map((result, index) =>
+                    e('div', {
+                      key: index,
+                      className: 'issue-item'
+                    },
+                      e('div', { className: 'issue-header' },
+                        e('div', { className: 'font-medium text-sm' }, result.nodeName)
+                      ),
+                      e('div', { className: 'issue-content' },
+                        e('div', { className: 'issue-text text-sm' }, result.text),
+                        e('div', { className: 'space-y-2' },
+                          result.issues.map((issue, issueIndex) =>
+                            e('div', { 
+                              key: issueIndex,
+                              className: 'flex items-center text-sm py-1'
+                            },
+                              e('span', null,
+                                'Change ',
+                                e('span', { className: 'highlight' }, issue.word),
+                                ' to ',
+                                e('span', { className: 'suggestion' }, issue.suggestion)
+                              ),
+                              e('button', {
+                                className: 'fix-button ml-2',
+                                onClick: () => handleFixIssue(result.nodeId, issue.suggestion)
+                              }, 'Fix')
+                            )
+                          )
+                        )
+                      )
+                    )
+                )
+            )
+          )
+        );
+      }
+
+      try {
+        root.render(e(App));
+        console.log('React app rendered successfully');
+      } catch (error) {
+        console.error('Error rendering React app:', error);
+      }
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initializeReact);
+    } else {
+      initializeReact();
+    }
+</script>
+</body>
+</html> 
