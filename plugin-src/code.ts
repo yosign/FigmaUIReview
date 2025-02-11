@@ -18,8 +18,9 @@ interface StyleInfo {
 }
 
 interface UIMessage {
-  type: 'init' | 'start-review' | 'get-text-styles' | 'fix-text';
+  type: 'init' | 'start-review' | 'get-text-styles' | 'fix-text' | 'go-to-node';
   selectedStyles?: string[];
+  nodesToReview?: string[];
   nodeId?: string;
   suggestion?: string;
 }
@@ -49,6 +50,23 @@ type SelectionStats = {
   totalCharacters: number;
   totalWords: number;
 };
+
+// 定义常见介词集合
+const PREPOSITIONS = new Set([
+  // 基础介词
+  'in', 'on', 'at', 'to', 'for', 'with', 'by', 'from', 'of',
+  // 复合介词
+  'into', 'onto', 'within', 'without', 'through', 'throughout',
+  // 方向介词
+  'up', 'down', 'over', 'under', 'above', 'below',
+  // 时间介词
+  'before', 'after', 'during', 'since', 'until',
+  // 其他常见介词
+  'about', 'between', 'among', 'against', 'along',
+  // 介词短语（作为单独单词）
+  'across', 'around', 'behind', 'beside', 'beyond',
+  'inside', 'outside', 'near', 'off', 'toward', 'towards'
+]);
 
 // 获取所有文本样式
 async function getTextStyles(): Promise<StyleInfo[]> {
@@ -95,7 +113,8 @@ function checkCapitalization(text: string): { word: string; index: number; sugge
   
   if (words.length <= 10) {
     words.forEach((word, index) => {
-      if (word.length > 0 && /^[a-z]/.test(word)) {
+      // 跳过介词检查
+      if (word.length > 0 && !PREPOSITIONS.has(word.toLowerCase()) && /^[a-z]/.test(word)) {
         issues.push({
           word,
           index,
@@ -135,8 +154,12 @@ async function checkTextNodes(node: BaseNode, results: TextCheckResult[], select
 
 // 修复文本中的首字母大写问题
 async function fixTextCapitalization(nodeId: string, suggestion: string) {
-  const node = figma.getNodeById(nodeId);
+  const node = await figma.getNodeByIdAsync(nodeId);
   if (node && node.type === 'TEXT') {
+    // 加载字体
+    const fontName = node.fontName as FontName;
+    await figma.loadFontAsync(fontName);
+    
     const text = node.characters;
     const words = text.split(/\s+/);
     const newWords = words.map(word => 
@@ -144,14 +167,36 @@ async function fixTextCapitalization(nodeId: string, suggestion: string) {
     );
     node.characters = newWords.join(' ');
     
-    // 重新检查并更新UI
-    const results = await checkTextNodes(node, [], []);
+    // 重新检查当前选中的所有节点
+    const selection = figma.currentPage.selection;
+    const results: TextCheckResult[] = [];
+    for (const selectedNode of selection) {
+      await checkTextNodes(selectedNode, results, []);
+    }
+    
+    // 发送更新后的结果到UI
     figma.ui.postMessage({
       type: 'review-complete',
-      results
+      results: results
     });
     
     figma.notify('Text updated successfully');
+  }
+}
+
+// 跳转到指定节点
+async function goToNode(nodeId: string) {
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (node && 'type' in node) {
+    const sceneNode = node as SceneNode;
+    // 选中节点
+    figma.currentPage.selection = [sceneNode];
+    
+    // 将视图居中到节点
+    figma.viewport.scrollAndZoomIntoView([sceneNode]);
+    
+    // 闪烁提示
+    figma.notify('Navigated to text layer');
   }
 }
 
@@ -162,7 +207,7 @@ figma.ui.onmessage = async (msg: UIMessage) => {
       await handleInit();
       break;
     case 'start-review':
-      await handleStartReview(msg.selectedStyles || []);
+      await handleStartReview(msg.selectedStyles, msg.nodesToReview);
       break;
     case 'get-text-styles':
       const styles = await getTextStyles();
@@ -176,6 +221,11 @@ figma.ui.onmessage = async (msg: UIMessage) => {
         await fixTextCapitalization(msg.nodeId, msg.suggestion);
       }
       break;
+    case 'go-to-node':
+      if (msg.nodeId) {
+        await goToNode(msg.nodeId);
+      }
+      break;
     default:
       console.log('Unknown message type:', msg.type);
   }
@@ -187,19 +237,33 @@ async function handleInit() {
   const selection = figma.currentPage.selection;
   const stats = getTextStats(selection);
   
+  // 获取所有文本节点
+  const textNodes = selection.reduce((acc: SelectionInfo[], node) => {
+    function collectTextNodes(n: SceneNode) {
+      if (n.type === 'TEXT') {
+        acc.push({
+          id: n.id,
+          name: n.name,
+          type: n.type,
+          textContent: n.characters,
+          styleId: n.textStyleId as string || undefined
+        });
+      }
+      if ('children' in n) {
+        n.children.forEach(collectTextNodes);
+      }
+    }
+    collectTextNodes(node);
+    return acc;
+  }, []);
+  
   // 获取文本样式
   const styles = await getTextStyles();
   
   // 发送选择信息到UI
   figma.ui.postMessage({
     type: 'selection-update',
-    selection: selection.map(node => ({
-      id: node.id,
-      name: node.name,
-      type: node.type,
-      textContent: node.type === 'TEXT' ? node.characters : undefined,
-      styleId: node.type === 'TEXT' ? node.textStyleId as string : undefined
-    })),
+    selection: textNodes,
     stats
   });
 
@@ -215,21 +279,35 @@ function handleSelectionCheck() {
   const selection = figma.currentPage.selection;
   const stats = getTextStats(selection);
   
+  // 获取所有文本节点
+  const textNodes = selection.reduce((acc: SelectionInfo[], node) => {
+    function collectTextNodes(n: SceneNode) {
+      if (n.type === 'TEXT') {
+        acc.push({
+          id: n.id,
+          name: n.name,
+          type: n.type,
+          textContent: n.characters,
+          styleId: n.textStyleId as string || undefined
+        });
+      }
+      if ('children' in n) {
+        n.children.forEach(collectTextNodes);
+      }
+    }
+    collectTextNodes(node);
+    return acc;
+  }, []);
+  
   figma.ui.postMessage({
     type: 'selection-update',
-    selection: selection.map(node => ({
-      id: node.id,
-      name: node.name,
-      type: node.type,
-      textContent: node.type === 'TEXT' ? node.characters : undefined,
-      styleId: node.type === 'TEXT' ? node.textStyleId as string : undefined
-    })),
+    selection: textNodes, // 只发送文本节点
     stats
   });
 }
 
 // 开始审查处理
-async function handleStartReview(selectedStyles: string[] = []) {
+async function handleStartReview(selectedStyles: string[] = [], nodesToReview: string[] = []) {
   const selection = figma.currentPage.selection;
   if (selection.length === 0) {
     figma.notify('Please select at least one element to review');
@@ -238,8 +316,20 @@ async function handleStartReview(selectedStyles: string[] = []) {
 
   // 检查所有选中元素中的文本
   const results: TextCheckResult[] = [];
-  for (const node of selection) {
-    await checkTextNodes(node, results, selectedStyles);
+  
+  // 如果提供了要检查的节点ID列表，则只检查这些节点
+  if (nodesToReview.length > 0) {
+    const nodes = await Promise.all(
+      nodesToReview.map(id => figma.getNodeByIdAsync(id))
+    );
+    const validNodes = nodes.filter(node => node) as SceneNode[];
+    for (const node of validNodes) {
+      await checkTextNodes(node, results, selectedStyles);
+    }
+  } else {
+    for (const node of selection) {
+      await checkTextNodes(node, results, selectedStyles);
+    }
   }
 
   // 发送结果到UI
