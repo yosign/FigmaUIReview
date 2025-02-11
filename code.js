@@ -9,6 +9,24 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
         step((generator = generator.apply(thisArg, _arguments || [])).next());
     });
 };
+// 定义常见介词集合
+const PREPOSITIONS = new Set([
+    // 基础介词
+    'in', 'on', 'at', 'to', 'for', 'with', 'by', 'from', 'of',
+    // 复合介词
+    'into', 'onto', 'within', 'without', 'through', 'throughout',
+    // 方向介词
+    'over', 'under', 'above', 'below',
+    // 时间介词
+    'before', 'after', 'during', 'since', 'until',
+    // 其他常见介词
+    'about', 'between', 'among', 'against', 'along',
+    // 介词短语（作为单独单词）
+    'across', 'around', 'behind', 'beside', 'beyond',
+    'inside', 'outside', 'near', 'off', 'toward', 'towards'
+]);
+// 标准圆角值
+const STANDARD_RADIUS = [0, 2, 4, 8, 12, 16, 24, 32];
 // 插件主控制器
 figma.showUI(__html__, {
     width: 450,
@@ -18,6 +36,10 @@ figma.showUI(__html__, {
 figma.on('selectionchange', () => {
     handleSelectionCheck();
 });
+// 检查圆角值是否标准
+function isStandardRadius(radius) {
+    return STANDARD_RADIUS.includes(radius);
+}
 // 获取所有文本样式
 function getTextStyles() {
     return __awaiter(this, void 0, void 0, function* () {
@@ -34,7 +56,8 @@ function getTextStats(nodes) {
         totalNodes: 0,
         textNodes: 0,
         totalCharacters: 0,
-        totalWords: 0
+        totalWords: 0,
+        selectedTextNodes: 0
     };
     function processNode(node) {
         stats.totalNodes++;
@@ -42,6 +65,7 @@ function getTextStats(nodes) {
             stats.textNodes++;
             stats.totalCharacters += node.characters.length;
             stats.totalWords += node.characters.trim().split(/\s+/).length;
+            stats.selectedTextNodes++;
         }
         if ('children' in node) {
             for (const child of node.children) {
@@ -58,7 +82,10 @@ function checkCapitalization(text) {
     const issues = [];
     if (words.length <= 10) {
         words.forEach((word, index) => {
-            if (word.length > 0 && /^[a-z]/.test(word)) {
+            // 如果是第一个单词，或者是短语中的重要单词，就应该大写
+            const shouldCapitalize = index === 0 ||
+                (!PREPOSITIONS.has(word.toLowerCase()) && word.length > 1);
+            if (word.length > 0 && shouldCapitalize && /^[a-z]/.test(word)) {
                 issues.push({
                     word,
                     index,
@@ -99,30 +126,152 @@ function checkTextNodes(node, results, selectedStyles) {
 // 修复文本中的首字母大写问题
 function fixTextCapitalization(nodeId, suggestion) {
     return __awaiter(this, void 0, void 0, function* () {
-        const node = figma.getNodeById(nodeId);
+        const node = yield figma.getNodeByIdAsync(nodeId);
         if (node && node.type === 'TEXT') {
+            // 加载字体
+            const fontName = node.fontName;
+            yield figma.loadFontAsync(fontName);
             const text = node.characters;
             const words = text.split(/\s+/);
             const newWords = words.map(word => word === suggestion.toLowerCase() ? suggestion : word);
             node.characters = newWords.join(' ');
-            // 重新检查并更新UI
-            const results = yield checkTextNodes(node, [], []);
+            // 重新检查当前选中的所有节点
+            const selection = figma.currentPage.selection;
+            const results = [];
+            for (const selectedNode of selection) {
+                yield checkTextNodes(selectedNode, results, []);
+            }
+            // 发送更新后的结果到UI
             figma.ui.postMessage({
                 type: 'review-complete',
-                results
+                results: results
             });
             figma.notify('Text updated successfully');
         }
     });
 }
-// 监听来自UI的消息
+// 跳转到指定节点
+function goToNode(nodeId) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const node = yield figma.getNodeByIdAsync(nodeId);
+        if (node && 'type' in node) {
+            const sceneNode = node;
+            // 选中节点
+            figma.currentPage.selection = [sceneNode];
+            // 将视图居中到节点
+            figma.viewport.scrollAndZoomIntoView([sceneNode]);
+            // 闪烁提示
+            figma.notify('Navigated to text layer');
+        }
+    });
+}
+// 检查节点是否需要被检查
+function shouldCheckNode(node, selectedStyles) {
+    // 如果没有选择任何样式，则检查所有文本
+    if (selectedStyles.length === 0)
+        return true;
+    // 如果节点没有样式，始终检查
+    if (!node.textStyleId)
+        return true;
+    // 检查节点的样式是否在选中的样式列表中
+    const styleId = node.textStyleId.toString();
+    return selectedStyles.includes(styleId);
+}
+// 检查节点的圆角
+function checkNodeRadius(node) {
+    return __awaiter(this, void 0, void 0, function* () {
+        // 只检查矩形、自动布局和框架
+        if (!('cornerRadius' in node))
+            return null;
+        const issues = [];
+        const radius = node.cornerRadius;
+        if (radius === undefined)
+            return null;
+        // 检查是否使用了混合圆角
+        if (Array.isArray(radius)) {
+            const uniqueRadii = [...new Set(radius)];
+            if (uniqueRadii.length > 1) {
+                issues.push({
+                    type: 'inconsistent',
+                    current: radius,
+                    suggestion: radius[0] // 建议使用第一个值
+                });
+            }
+            // 检查每个圆角值是否标准
+            radius.forEach(r => {
+                if (!isStandardRadius(r)) {
+                    const closestStandard = STANDARD_RADIUS.reduce((prev, curr) => Math.abs(curr - r) < Math.abs(prev - r) ? curr : prev);
+                    issues.push({
+                        type: 'non-standard',
+                        current: r,
+                        suggestion: closestStandard
+                    });
+                }
+            });
+        }
+        else if (typeof radius === 'number' && radius !== 0) {
+            // 检查单个圆角值是否标准
+            if (!isStandardRadius(radius)) {
+                const closestStandard = STANDARD_RADIUS.reduce((prev, curr) => Math.abs(curr - radius) < Math.abs(prev - radius) ? curr : prev);
+                issues.push({
+                    type: 'non-standard',
+                    current: radius,
+                    suggestion: closestStandard
+                });
+            }
+        }
+        if (issues.length === 0)
+            return null;
+        return {
+            nodeId: node.id,
+            nodeName: node.name,
+            nodeType: node.type,
+            cornerRadius: radius,
+            issues
+        };
+    });
+}
+// 递归检查节点的圆角
+function checkRadiusRecursively(node, results) {
+    return __awaiter(this, void 0, void 0, function* () {
+        if ('cornerRadius' in node) {
+            const result = yield checkNodeRadius(node);
+            if (result) {
+                results.push(result);
+            }
+        }
+        if ('children' in node) {
+            for (const child of node.children) {
+                yield checkRadiusRecursively(child, results);
+            }
+        }
+    });
+}
+// 修复圆角问题
+function fixNodeRadius(nodeId, suggestion) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const node = yield figma.getNodeByIdAsync(nodeId);
+        if (node && 'cornerRadius' in node) {
+            const targetNode = node;
+            if (Array.isArray(targetNode.cornerRadius)) {
+                // 如果是混合圆角，统一设置为建议值
+                targetNode.cornerRadius = [suggestion, suggestion, suggestion, suggestion];
+            }
+            else {
+                targetNode.cornerRadius = suggestion;
+            }
+            figma.notify('Corner radius updated successfully');
+        }
+    });
+}
+// 修改消息处理器
 figma.ui.onmessage = (msg) => __awaiter(void 0, void 0, void 0, function* () {
     switch (msg.type) {
         case 'init':
             yield handleInit();
             break;
         case 'start-review':
-            yield handleStartReview(msg.selectedStyles || []);
+            yield handleStartReview(msg.selectedStyles, msg.nodesToReview);
             break;
         case 'get-text-styles':
             const styles = yield getTextStyles();
@@ -136,6 +285,47 @@ figma.ui.onmessage = (msg) => __awaiter(void 0, void 0, void 0, function* () {
                 yield fixTextCapitalization(msg.nodeId, msg.suggestion);
             }
             break;
+        case 'go-to-node':
+            if (msg.nodeId) {
+                yield goToNode(msg.nodeId);
+            }
+            break;
+        case 'start-radius-review':
+            const radiusResults = [];
+            const selection = figma.currentPage.selection;
+            if (selection.length === 0) {
+                figma.notify('Please select at least one element to review');
+                return;
+            }
+            for (const node of selection) {
+                yield checkRadiusRecursively(node, radiusResults);
+            }
+            figma.ui.postMessage({
+                type: 'radius-review-complete',
+                results: radiusResults
+            });
+            if (radiusResults.length > 0) {
+                figma.notify(`Found ${radiusResults.length} radius issues`);
+            }
+            else {
+                figma.notify('No radius issues found');
+            }
+            break;
+        case 'fix-radius':
+            if (msg.nodeId && typeof msg.suggestion === 'number') {
+                yield fixNodeRadius(msg.nodeId, msg.suggestion);
+                // 重新检查并更新UI
+                const radiusResults = [];
+                const selection = figma.currentPage.selection;
+                for (const node of selection) {
+                    yield checkRadiusRecursively(node, radiusResults);
+                }
+                figma.ui.postMessage({
+                    type: 'radius-review-complete',
+                    results: radiusResults
+                });
+            }
+            break;
         default:
             console.log('Unknown message type:', msg.type);
     }
@@ -146,18 +336,31 @@ function handleInit() {
         // 发送当前选择到UI
         const selection = figma.currentPage.selection;
         const stats = getTextStats(selection);
+        // 获取所有文本节点
+        const textNodes = selection.reduce((acc, node) => {
+            function collectTextNodes(n) {
+                if (n.type === 'TEXT') {
+                    acc.push({
+                        id: n.id,
+                        name: n.name,
+                        type: n.type,
+                        textContent: n.characters,
+                        styleId: n.textStyleId || undefined
+                    });
+                }
+                if ('children' in n) {
+                    n.children.forEach(collectTextNodes);
+                }
+            }
+            collectTextNodes(node);
+            return acc;
+        }, []);
         // 获取文本样式
         const styles = yield getTextStyles();
         // 发送选择信息到UI
         figma.ui.postMessage({
             type: 'selection-update',
-            selection: selection.map(node => ({
-                id: node.id,
-                name: node.name,
-                type: node.type,
-                textContent: node.type === 'TEXT' ? node.characters : undefined,
-                styleId: node.type === 'TEXT' ? node.textStyleId : undefined
-            })),
+            selection: textNodes,
             stats
         });
         // 发送文本样式列表到UI
@@ -171,21 +374,34 @@ function handleInit() {
 function handleSelectionCheck() {
     const selection = figma.currentPage.selection;
     const stats = getTextStats(selection);
+    // 获取所有文本节点
+    const textNodes = selection.reduce((acc, node) => {
+        function collectTextNodes(n) {
+            if (n.type === 'TEXT') {
+                acc.push({
+                    id: n.id,
+                    name: n.name,
+                    type: n.type,
+                    textContent: n.characters,
+                    styleId: n.textStyleId || undefined
+                });
+            }
+            if ('children' in n) {
+                n.children.forEach(collectTextNodes);
+            }
+        }
+        collectTextNodes(node);
+        return acc;
+    }, []);
     figma.ui.postMessage({
         type: 'selection-update',
-        selection: selection.map(node => ({
-            id: node.id,
-            name: node.name,
-            type: node.type,
-            textContent: node.type === 'TEXT' ? node.characters : undefined,
-            styleId: node.type === 'TEXT' ? node.textStyleId : undefined
-        })),
+        selection: textNodes,
         stats
     });
 }
 // 开始审查处理
 function handleStartReview() {
-    return __awaiter(this, arguments, void 0, function* (selectedStyles = []) {
+    return __awaiter(this, arguments, void 0, function* (selectedStyles = [], nodesToReview = []) {
         const selection = figma.currentPage.selection;
         if (selection.length === 0) {
             figma.notify('Please select at least one element to review');
@@ -193,8 +409,18 @@ function handleStartReview() {
         }
         // 检查所有选中元素中的文本
         const results = [];
-        for (const node of selection) {
-            yield checkTextNodes(node, results, selectedStyles);
+        // 如果提供了要检查的节点ID列表，则只检查这些节点
+        if (nodesToReview.length > 0) {
+            const nodes = yield Promise.all(nodesToReview.map(id => figma.getNodeByIdAsync(id)));
+            const validNodes = nodes.filter(node => node);
+            for (const node of validNodes) {
+                yield checkTextNodes(node, results, selectedStyles);
+            }
+        }
+        else {
+            for (const node of selection) {
+                yield checkTextNodes(node, results, selectedStyles);
+            }
         }
         // 发送结果到UI
         figma.ui.postMessage({
@@ -209,15 +435,4 @@ function handleStartReview() {
             figma.notify('No capitalization issues found');
         }
     });
-}
-function shouldCheckNode(node, selectedStyles) {
-    // 如果没有选择任何样式，则检查所有文本
-    if (selectedStyles.length === 0)
-        return true;
-    // 如果节点没有样式，始终检查
-    if (!node.textStyleId)
-        return true;
-    // 检查节点的样式是否在选中的样式列表中
-    const styleId = node.textStyleId.toString();
-    return selectedStyles.includes(styleId);
 }

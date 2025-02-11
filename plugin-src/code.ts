@@ -1,16 +1,5 @@
 /// <reference types="@figma/plugin-typings" />
 
-// 插件主控制器
-figma.showUI(__html__, {
-  width: 450,
-  height: 600,
-});
-
-// 监听选择变化
-figma.on('selectionchange', () => {
-  handleSelectionCheck();
-});
-
 // 定义消息类型
 interface StyleInfo {
   id: string;
@@ -61,6 +50,7 @@ type SelectionStats = {
   textNodes: number;
   totalCharacters: number;
   totalWords: number;
+  selectedTextNodes: number;
 };
 
 // 定义常见介词集合
@@ -70,7 +60,7 @@ const PREPOSITIONS = new Set([
   // 复合介词
   'into', 'onto', 'within', 'without', 'through', 'throughout',
   // 方向介词
-  'up', 'down', 'over', 'under', 'above', 'below',
+  'over', 'under', 'above', 'below',
   // 时间介词
   'before', 'after', 'during', 'since', 'until',
   // 其他常见介词
@@ -82,6 +72,17 @@ const PREPOSITIONS = new Set([
 
 // 标准圆角值
 const STANDARD_RADIUS = [0, 2, 4, 8, 12, 16, 24, 32];
+
+// 插件主控制器
+figma.showUI(__html__, {
+  width: 450,
+  height: 600,
+});
+
+// 监听选择变化
+figma.on('selectionchange', () => {
+  handleSelectionCheck();
+});
 
 // 检查圆角值是否标准
 function isStandardRadius(radius: number): boolean {
@@ -103,16 +104,18 @@ function getTextStats(nodes: readonly SceneNode[]): SelectionStats {
     totalNodes: 0,
     textNodes: 0,
     totalCharacters: 0,
-    totalWords: 0
+    totalWords: 0,
+    selectedTextNodes: 0
   };
 
   function processNode(node: SceneNode) {
     stats.totalNodes++;
-
+    
     if (node.type === 'TEXT') {
       stats.textNodes++;
       stats.totalCharacters += node.characters.length;
       stats.totalWords += node.characters.trim().split(/\s+/).length;
+      stats.selectedTextNodes++;
     }
 
     if ('children' in node) {
@@ -133,8 +136,11 @@ function checkCapitalization(text: string): { word: string; index: number; sugge
   
   if (words.length <= 10) {
     words.forEach((word, index) => {
-      // 跳过介词检查
-      if (word.length > 0 && !PREPOSITIONS.has(word.toLowerCase()) && /^[a-z]/.test(word)) {
+      // 如果是第一个单词，或者是短语中的重要单词，就应该大写
+      const shouldCapitalize = index === 0 || 
+        (!PREPOSITIONS.has(word.toLowerCase()) && word.length > 1);
+      
+      if (word.length > 0 && shouldCapitalize && /^[a-z]/.test(word)) {
         issues.push({
           word,
           index,
@@ -218,6 +224,19 @@ async function goToNode(nodeId: string) {
     // 闪烁提示
     figma.notify('Navigated to text layer');
   }
+}
+
+// 检查节点是否需要被检查
+function shouldCheckNode(node: TextNode, selectedStyles: string[]): boolean {
+  // 如果没有选择任何样式，则检查所有文本
+  if (selectedStyles.length === 0) return true;
+  
+  // 如果节点没有样式，始终检查
+  if (!node.textStyleId) return true;
+  
+  // 检查节点的样式是否在选中的样式列表中
+  const styleId = node.textStyleId.toString();
+  return selectedStyles.includes(styleId);
 }
 
 // 检查节点的圆角
@@ -451,7 +470,7 @@ function handleSelectionCheck() {
   
   figma.ui.postMessage({
     type: 'selection-update',
-    selection: textNodes, // 只发送文本节点
+    selection: textNodes,
     stats
   });
 }
@@ -494,16 +513,4 @@ async function handleStartReview(selectedStyles: string[] = [], nodesToReview: s
   } else {
     figma.notify('No capitalization issues found');
   }
-}
-
-function shouldCheckNode(node: TextNode, selectedStyles: string[]): boolean {
-  // 如果没有选择任何样式，则检查所有文本
-  if (selectedStyles.length === 0) return true;
-  
-  // 如果节点没有样式，始终检查
-  if (!node.textStyleId) return true;
-  
-  // 检查节点的样式是否在选中的样式列表中
-  const styleId = node.textStyleId.toString();
-  return selectedStyles.includes(styleId);
 } 
