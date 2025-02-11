@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState } from 'react'
+import { Tabs } from '@/components/navigation/Tabs'
 
 type SelectionInfo = {
   id: string
@@ -11,6 +12,7 @@ type SelectionInfo = {
 export default function Home() {
   const [selection, setSelection] = useState<SelectionInfo[]>([])
   const [results, setResults] = useState<any[]>([])
+  const [activeTab, setActiveTab] = useState('text')
 
   useEffect(() => {
     // 监听来自插件的消息
@@ -33,12 +35,30 @@ export default function Home() {
   }, [])
 
   const handleStartReview = () => {
-    parent.postMessage({ pluginMessage: { type: 'start-review' } }, '*')
+    parent.postMessage({ 
+      pluginMessage: { 
+        type: 'start-review',
+        reviewType: activeTab 
+      } 
+    }, '*')
   }
+
+  const handleTabChange = (tabId: string) => {
+    setActiveTab(tabId);
+    setResults([]); // 切换 tab 时清空结果
+  };
 
   return (
     <div className="container mx-auto p-4">
       <div className="flex flex-col space-y-4">
+        {/* 顶部导航 */}
+        <header className="flex items-center justify-between bg-white rounded-lg shadow p-4">
+          <div className="flex items-center space-x-4">
+            <h1 className="text-xl font-bold">UI Review</h1>
+            <Tabs onTabChange={handleTabChange} />
+          </div>
+        </header>
+
         {/* 配置区域 */}
         <section className="bg-white rounded-lg shadow p-4">
           <h2 className="text-lg font-semibold mb-2">Configuration</h2>
@@ -46,7 +66,7 @@ export default function Home() {
             onClick={handleStartReview}
             className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 transition-colors"
           >
-            Start Review
+            Start {activeTab === 'text' ? 'Text' : 'Radius'} Review
           </button>
         </section>
 
