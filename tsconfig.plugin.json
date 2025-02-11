@@ -1,17 +1,15 @@
 {
   "compilerOptions": {
-    "target": "es6",
-    "lib": ["es2016", "dom"],
+    "target": "es2017",
+    "lib": ["es2017"],
     "strict": true,
+    "moduleResolution": "node",
+    "outDir": "out",
     "typeRoots": [
       "./node_modules/@figma"
     ],
-    "outDir": ".",
-    "moduleResolution": "node",
-    "module": "none",
     "skipLibCheck": true,
-    "noImplicitAny": false
+    "module": "none"
   },
-  "include": ["plugin-src/**/*"],
-  "exclude": ["node_modules", "src"]
+  "include": ["plugin-src/**/*"]
 } 

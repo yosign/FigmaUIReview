@@ -7,11 +7,12 @@ interface StyleInfo {
 }
 
 interface UIMessage {
-  type: 'init' | 'start-review' | 'get-text-styles' | 'fix-text' | 'go-to-node' | 'start-radius-review' | 'fix-radius';
+  type: 'init' | 'start-review' | 'get-text-styles' | 'fix-text' | 'go-to-node' | 'start-radius-review' | 'fix-radius' | 'tab-change';
   selectedStyles?: string[];
   nodesToReview?: string[];
   nodeId?: string;
   suggestion?: string;
+  tab?: string;
 }
 
 interface TextCheckResult {
@@ -217,7 +218,6 @@ async function goToNode(nodeId: string) {
     const node = await figma.getNodeByIdAsync(nodeId);
     if (!node) {
       console.error('Node not found:', nodeId);
-      figma.notify('找不到指定的图层');
       return;
     }
 
@@ -240,15 +240,9 @@ async function goToNode(nodeId: string) {
       
       // 将视图居中到节点
       figma.viewport.scrollAndZoomIntoView([sceneNode]);
-      
-      // 闪烁提示
-      figma.notify('已定位到图层: ' + sceneNode.name);
-    } else {
-      figma.notify('无法定位到该类型的图层');
     }
   } catch (error) {
     console.error('Error navigating to node:', error);
-    figma.notify('定位图层时出错');
   }
 }
 
@@ -267,26 +261,42 @@ function shouldCheckNode(node: TextNode, selectedStyles: string[]): boolean {
 
 // 检查节点的圆角
 async function checkNodeRadius(node: SceneNode): Promise<RadiusCheckResult | null> {
+  console.log('Checking radius for node:', node.type, node.name);
   // 只检查矩形、自动布局和框架
-  if (!('cornerRadius' in node)) return null;
+  if (!('cornerRadius' in node)) {
+    console.log('Node has no cornerRadius property');
+    return null;
+  }
 
   const radius = (node as any).cornerRadius;
+  console.log('Raw radius value:', radius);
   
-  if (radius === undefined) return null;
+  if (radius === undefined) {
+    console.log('Radius is undefined');
+    return null;
+  }
 
   // 确保返回的数据是可序列化的，并忽略0值
   const cornerRadius = Array.isArray(radius) 
     ? radius.map(r => typeof r === 'number' ? r : 0).filter(r => r !== 0)
     : typeof radius === 'number' ? radius : 0;
+  console.log('Processed corner radius:', cornerRadius);
 
   // 如果所有圆角都是0，则返回null
-  if (Array.isArray(cornerRadius) && cornerRadius.length === 0) return null;
-  if (!Array.isArray(cornerRadius) && cornerRadius === 0) return null;
+  if (Array.isArray(cornerRadius) && cornerRadius.length === 0) {
+    console.log('All corners are 0');
+    return null;
+  }
+  if (!Array.isArray(cornerRadius) && cornerRadius === 0) {
+    console.log('Single corner is 0');
+    return null;
+  }
 
   // 检查是否有小数点值
   const hasDecimal = Array.isArray(cornerRadius)
     ? cornerRadius.some(r => !Number.isInteger(r))
     : !Number.isInteger(cornerRadius);
+  console.log('Has decimal:', hasDecimal);
 
   return {
     nodeId: node.id,
@@ -300,9 +310,11 @@ async function checkNodeRadius(node: SceneNode): Promise<RadiusCheckResult | nul
 
 // 递归检查节点的圆角
 async function checkRadiusRecursively(node: BaseNode, results: RadiusCheckResult[]) {
+  console.log('Checking node:', node.type, node.name);
   if ('cornerRadius' in node) {
     const result = await checkNodeRadius(node as SceneNode);
     if (result) {
+      console.log('Found radius:', result.cornerRadius);
       results.push(result);
     }
   }
@@ -327,6 +339,20 @@ async function fixNodeRadius(nodeId: string, suggestion: number) {
     }
     figma.notify('Corner radius updated successfully');
   }
+}
+
+interface RadiusDistribution {
+  [key: number]: {
+    count: number;
+    nodes: RadiusCheckResult[];
+  };
+}
+
+interface RadiusStats {
+  distribution: RadiusDistribution;
+  mostCommonRadius: number;
+  total: number;
+  uniqueValues: number;
 }
 
 // 修改消息处理器
@@ -392,6 +418,40 @@ figma.ui.onmessage = async (msg: UIMessage) => {
             results: serializedResults
           });
           figma.notify(`Found ${serializedResults.length} elements with non-zero radius`);
+
+          // 统计每个圆角值的出现次数
+          const distribution: RadiusDistribution = serializedResults.reduce((acc: RadiusDistribution, item) => {
+            const radius = Array.isArray(item.cornerRadius)
+              ? Math.max(...item.cornerRadius) // 使用最大值作为参考
+              : item.cornerRadius;
+            
+            if (!acc[radius]) {
+              acc[radius] = {
+                count: 0,
+                nodes: []
+              };
+            }
+            acc[radius].count++;
+            acc[radius].nodes.push(item);
+            return acc;
+          }, {} as RadiusDistribution);
+
+          // 找出最常用的圆角值（出现次数最多的）
+          const mostCommonRadius = Object.entries(distribution)
+            .sort((a, b) => b[1].count - a[1].count)[0][0];
+
+          // 计算统计信息
+          const stats: RadiusStats = {
+            distribution,
+            mostCommonRadius: Number(mostCommonRadius),
+            total: serializedResults.length,
+            uniqueValues: Object.keys(distribution).length
+          };
+
+          figma.ui.postMessage({
+            type: 'radius-stats-update',
+            stats
+          });
         } else {
           figma.notify('No elements with non-zero radius found');
           figma.ui.postMessage({
@@ -423,6 +483,53 @@ figma.ui.onmessage = async (msg: UIMessage) => {
           type: 'radius-review-complete',
           results: radiusResults
         });
+      }
+      break;
+    case 'tab-change':
+      if (msg.tab === 'radius') {
+        // 切换到圆角标签页时，立即进行圆角分析
+        const selection = figma.currentPage.selection;
+        if (selection.length > 0) {
+          const radiusResults: RadiusCheckResult[] = [];
+          try {
+            for (const node of selection) {
+              await checkRadiusRecursively(node, radiusResults);
+            }
+
+            const filteredResults = radiusResults.filter(result => {
+              if (Array.isArray(result.cornerRadius)) {
+                return result.cornerRadius.length > 0;
+              }
+              return result.cornerRadius !== 0;
+            });
+
+            const serializedResults = filteredResults.map(result => ({
+              ...result,
+              cornerRadius: Array.isArray(result.cornerRadius)
+                ? result.cornerRadius.map(r => Number(r))
+                : Number(result.cornerRadius),
+              hasDecimal: result.hasDecimal
+            }));
+
+            if (serializedResults.length > 0) {
+              figma.ui.postMessage({
+                type: 'radius-review-complete',
+                results: serializedResults
+              });
+            } else {
+              figma.ui.postMessage({
+                type: 'radius-review-complete',
+                results: []
+              });
+            }
+          } catch (error) {
+            console.error('Error during radius review:', error);
+            figma.ui.postMessage({
+              type: 'radius-review-complete',
+              results: []
+            });
+          }
+        }
       }
       break;
     default:
@@ -471,11 +578,53 @@ async function handleInit() {
     type: 'text-styles-update',
     styles
   });
+
+  // 初始化时进行圆角分析
+  if (selection.length > 0) {
+    const radiusResults: RadiusCheckResult[] = [];
+    try {
+      for (const node of selection) {
+        await checkRadiusRecursively(node, radiusResults);
+      }
+
+      // 过滤掉所有圆角为0的结果
+      const filteredResults = radiusResults.filter(result => {
+        if (Array.isArray(result.cornerRadius)) {
+          return result.cornerRadius.length > 0;
+        }
+        return result.cornerRadius !== 0;
+      });
+
+      // 确保所有数据都是可序列化的
+      const serializedResults = filteredResults.map(result => ({
+        ...result,
+        cornerRadius: Array.isArray(result.cornerRadius)
+          ? result.cornerRadius.map(r => Number(r))
+          : Number(result.cornerRadius),
+        hasDecimal: result.hasDecimal
+      }));
+
+      if (serializedResults.length > 0) {
+        figma.ui.postMessage({
+          type: 'radius-review-complete',
+          results: serializedResults
+        });
+      }
+    } catch (error) {
+      console.error('Error during radius review:', error);
+      figma.ui.postMessage({
+        type: 'radius-review-complete',
+        results: []
+      });
+    }
+  }
 }
 
 // 选择变化处理
-function handleSelectionCheck() {
+async function handleSelectionCheck() {
+  console.log('Selection check started');
   const selection = figma.currentPage.selection;
+  console.log('Current selection:', selection.length, 'items');
   const stats = getTextStats(selection);
   
   // 获取所有文本节点
@@ -498,11 +647,107 @@ function handleSelectionCheck() {
     return acc;
   }, []);
   
+  console.log('Text nodes found:', textNodes.length);
+  
+  // 发送文本节点信息
   figma.ui.postMessage({
     type: 'selection-update',
     selection: textNodes,
     stats
   });
+
+  // 如果当前在圆角标签页，自动进行圆角分析
+  if (selection.length > 0) {
+    console.log('Starting radius check');
+    const radiusResults: RadiusCheckResult[] = [];
+    try {
+      for (const node of selection) {
+        await checkRadiusRecursively(node, radiusResults);
+      }
+      console.log('Raw radius results:', radiusResults.length);
+
+      // 过滤掉所有圆角为0的结果
+      const filteredResults = radiusResults.filter(result => {
+        if (Array.isArray(result.cornerRadius)) {
+          return result.cornerRadius.length > 0;
+        }
+        return result.cornerRadius !== 0;
+      });
+      console.log('Filtered radius results:', filteredResults.length);
+
+      // 确保所有数据都是可序列化的
+      const serializedResults = filteredResults.map(result => ({
+        ...result,
+        cornerRadius: Array.isArray(result.cornerRadius)
+          ? result.cornerRadius.map(r => Number(r))
+          : Number(result.cornerRadius),
+        hasDecimal: result.hasDecimal
+      }));
+      console.log('Serialized results:', serializedResults.length);
+
+      if (serializedResults.length > 0) {
+        console.log('Sending radius results to UI');
+        
+        // 计算圆角分布统计
+        const distribution: RadiusDistribution = serializedResults.reduce((acc: RadiusDistribution, item) => {
+          const radius = Array.isArray(item.cornerRadius)
+            ? Math.max(...item.cornerRadius)
+            : item.cornerRadius;
+          
+          if (!acc[radius]) {
+            acc[radius] = {
+              count: 0,
+              nodes: []
+            };
+          }
+          acc[radius].count++;
+          acc[radius].nodes.push(item);
+          return acc;
+        }, {} as RadiusDistribution);
+
+        // 找出最常用的圆角值
+        const mostCommonRadius = Object.entries(distribution)
+          .sort((a, b) => b[1].count - a[1].count)[0][0];
+
+        // 计算统计信息
+        const stats: RadiusStats = {
+          distribution,
+          mostCommonRadius: Number(mostCommonRadius),
+          total: serializedResults.length,
+          uniqueValues: Object.keys(distribution).length
+        };
+
+        // 发送结果和统计数据
+        figma.ui.postMessage({
+          type: 'radius-review-complete',
+          results: serializedResults
+        });
+
+        figma.ui.postMessage({
+          type: 'radius-stats-update',
+          stats
+        });
+      } else {
+        console.log('No radius results to send');
+        figma.ui.postMessage({
+          type: 'radius-review-complete',
+          results: []
+        });
+      }
+    } catch (error) {
+      console.error('Error during radius review:', error);
+      figma.ui.postMessage({
+        type: 'radius-review-complete',
+        results: []
+      });
+    }
+  } else {
+    // 如果没有选中元素，发送空结果
+    figma.ui.postMessage({
+      type: 'radius-review-complete',
+      results: []
+    });
+  }
 }
 
 // 开始审查处理

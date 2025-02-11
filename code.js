@@ -157,7 +157,6 @@ function goToNode(nodeId) {
             const node = yield figma.getNodeByIdAsync(nodeId);
             if (!node) {
                 console.error('Node not found:', nodeId);
-                figma.notify('找不到指定的图层');
                 return;
             }
             if ('type' in node) {
@@ -175,16 +174,10 @@ function goToNode(nodeId) {
                 figma.currentPage.selection = [sceneNode];
                 // 将视图居中到节点
                 figma.viewport.scrollAndZoomIntoView([sceneNode]);
-                // 闪烁提示
-                figma.notify('已定位到图层: ' + sceneNode.name);
-            }
-            else {
-                figma.notify('无法定位到该类型的图层');
             }
         }
         catch (error) {
             console.error('Error navigating to node:', error);
-            figma.notify('定位图层时出错');
         }
     });
 }
@@ -319,6 +312,35 @@ figma.ui.onmessage = (msg) => __awaiter(void 0, void 0, void 0, function* () {
                         results: serializedResults
                     });
                     figma.notify(`Found ${serializedResults.length} elements with non-zero radius`);
+                    // 统计每个圆角值的出现次数
+                    const distribution = serializedResults.reduce((acc, item) => {
+                        const radius = Array.isArray(item.cornerRadius)
+                            ? Math.max(...item.cornerRadius) // 使用最大值作为参考
+                            : item.cornerRadius;
+                        if (!acc[radius]) {
+                            acc[radius] = {
+                                count: 0,
+                                nodes: []
+                            };
+                        }
+                        acc[radius].count++;
+                        acc[radius].nodes.push(item);
+                        return acc;
+                    }, {});
+                    // 找出最常用的圆角值（出现次数最多的）
+                    const mostCommonRadius = Object.entries(distribution)
+                        .sort((a, b) => b[1].count - a[1].count)[0][0];
+                    // 计算统计信息
+                    const stats = {
+                        distribution,
+                        mostCommonRadius: Number(mostCommonRadius),
+                        total: serializedResults.length,
+                        uniqueValues: Object.keys(distribution).length
+                    };
+                    figma.ui.postMessage({
+                        type: 'radius-stats-update',
+                        stats
+                    });
                 }
                 else {
                     figma.notify('No elements with non-zero radius found');

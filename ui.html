@@ -477,6 +477,7 @@
     let reactSetCurrentTab; // 存储 React 的 setCurrentTab 函数
 
     function setActiveTab(tabId) {
+      console.log('Tab changed to:', tabId);
       activeTab = tabId;
       document.querySelectorAll('.tab').forEach(tab => {
         if (tab.dataset.id === tabId) {
@@ -523,6 +524,9 @@
         const [textStyles, setTextStyles] = React.useState([]);
         const [selectedStyles, setSelectedStyles] = React.useState(['no-style']);
         const [currentTab, setCurrentTab] = React.useState(activeTab);
+        const [nodeIndices, setNodeIndices] = React.useState({});
+        const [radiusStats, setRadiusStats] = React.useState(null);
+        const [hasInitialCheck, setHasInitialCheck] = React.useState(false);
         const [stats, setStats] = React.useState({
           totalNodes: 0,
           textNodes: 0,
@@ -549,16 +553,33 @@
 
         React.useEffect(() => {
           function handleMessage(event) {
+            console.log('Received message:', event.data.pluginMessage);
             const message = event.data.pluginMessage;
             if (!message) return;
 
             switch (message.type) {
               case 'tab-change':
+                console.log('Tab change message received:', message);
                 setCurrentTab(message.tab);
-                setResults([]);
-                setIsReviewing(false);
+                if (message.tab === 'radius') {
+                  console.log('Setting reviewing state for radius tab');
+                  // 只有在没有结果时才自动开始分析
+                  if (!radiusStats) {
+                    setIsReviewing(true);
+                    parent.postMessage({
+                      pluginMessage: {
+                        type: 'start-radius-review'
+                      }
+                    }, '*');
+                  }
+                } else {
+                  setResults([]);
+                  setRadiusStats(null);
+                  setIsReviewing(false);
+                }
                 break;
               case 'selection-update':
+                console.log('Selection update received:', message);
                 const newSelection = message.selection;
                 setSelection(newSelection);
                 const filtered = selectedStyles.length > 0 
@@ -569,6 +590,16 @@
                   ...message.stats,
                   selectedTextNodes: filtered.length
                 }));
+
+                // 只有在圆角标签页且没有结果时，才自动开始分析
+                if (currentTab === 'radius' && !radiusStats && newSelection.length > 0) {
+                  setIsReviewing(true);
+                  parent.postMessage({
+                    pluginMessage: {
+                      type: 'start-radius-review'
+                    }
+                  }, '*');
+                }
                 break;
               case 'text-styles-update':
                 if (Array.isArray(message.styles)) {
@@ -576,9 +607,25 @@
                 }
                 break;
               case 'review-complete':
+                if (currentTab === 'text') {
+                  setResults(message.results);
+                  setIsReviewing(false);
+                }
+                break;
               case 'radius-review-complete':
-                setResults(message.results);
-                setIsReviewing(false);
+                console.log('Radius review complete:', message.results);
+                if (currentTab === 'radius') {
+                  setResults(message.results);
+                  setIsReviewing(false);
+                  setHasInitialCheck(true); // 标记已完成首次检查
+                }
+                break;
+              case 'radius-stats-update':
+                console.log('Radius stats update received:', message.stats);
+                if (currentTab === 'radius' && message.stats) {
+                  setRadiusStats(message.stats);
+                  setIsReviewing(false);
+                }
                 break;
             }
           }
@@ -593,7 +640,7 @@
           return () => {
             window.removeEventListener('message', handleMessage);
           };
-        }, [selectedStyles]);
+        }, [selectedStyles, currentTab]);
 
         const handleStyleToggle = (styleId) => {
           if (styleId === 'no-style') return;
@@ -637,54 +684,6 @@
               type: 'start-radius-review'
             }
           }, '*');
-        };
-
-        // 分析圆角分布
-        const analyzeRadiusDistribution = (results) => {
-          if (!results || results.length === 0) return null;
-
-          // 确保所有圆角值都是数字
-          const normalizedResults = results.map(item => ({
-            ...item,
-            cornerRadius: Array.isArray(item.cornerRadius)
-              ? item.cornerRadius.map(r => Number(r))
-              : Number(item.cornerRadius)
-          }));
-
-          // 统计每个圆角值的出现次数
-          const distribution = normalizedResults.reduce((acc, item) => {
-            const radius = Array.isArray(item.cornerRadius)
-              ? Math.max(...item.cornerRadius) // 使用最大值作为参考
-              : item.cornerRadius;
-            
-            acc[radius] = (acc[radius] || 0) + 1;
-            return acc;
-          }, {});
-
-          // 找出最常用的圆角值（出现次数最多的）
-          const mostCommonRadius = Object.entries(distribution)
-            .sort((a, b) => b[1] - a[1])[0][0];
-
-          // 计算统计信息
-          const stats = {
-            distribution,
-            mostCommonRadius: Number(mostCommonRadius),
-            total: normalizedResults.length,
-            uniqueValues: Object.keys(distribution).length
-          };
-
-          // 标记异常值（与最常用值差异超过2px的）
-          const anomalies = normalizedResults.filter(item => {
-            const radius = Array.isArray(item.cornerRadius)
-              ? Math.max(...item.cornerRadius)
-              : item.cornerRadius;
-            return Math.abs(radius - stats.mostCommonRadius) > 2;
-          });
-
-          return {
-            ...stats,
-            anomalies
-          };
         };
 
         // 文案检查页面
@@ -841,61 +840,68 @@
 
         // 圆角检查页面
         const RadiusReviewPage = () => {
-          const analysis = results.length > 0 ? analyzeRadiusDistribution(results) : null;
+          // 处理定位按钮点击
+          const handleGoToNode = (radius, nodes) => {
+            const currentIndex = nodeIndices[radius] || 0;
+            const nextIndex = (currentIndex + 1) % nodes.length;
+            setNodeIndices(prev => ({
+              ...prev,
+              [radius]: nextIndex
+            }));
+            const nodeId = nodes[currentIndex].nodeId;
+            parent.postMessage({
+              pluginMessage: {
+                type: 'go-to-node',
+                nodeId: nodeId
+              }
+            }, '*');
+          };
 
           return e('div', { className: 'space-y-6' },
-            // 检查配置区域
+            // 提示区域
             e('div', { className: 'section' },
               e('div', { className: 'section-header' },
-                e('h2', { className: 'section-title' }, '圆角规范检查')
+                e('h2', { className: 'section-title' }, '圆角规范检查'),
+                selection.length > 0 && !isReviewing && e('button', {
+                  className: 'btn btn-primary',
+                  onClick: handleStartRadiusReview
+                }, '重新检查')
               ),
               e('div', { className: 'section-content text-center' },
-                e('div', { className: 'mb-4 text-gray-400' },
-                  e('svg', {
-                    className: 'mx-auto h-12 w-12',
-                    fill: 'none',
-                    viewBox: '0 0 24 24',
-                    stroke: 'currentColor',
-                    'aria-hidden': 'true'
-                  },
-                    e('path', {
-                      strokeLinecap: 'round',
-                      strokeLinejoin: 'round',
-                      strokeWidth: 2,
-                      d: 'M4 5a2 2 0 012-2h12a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V5z'
-                    })
-                  )
-                ),
-                e('p', { className: 'mb-4 text-sm text-gray-500' }, 
-                  '选择需要检查的元素，点击下方按钮开始检查圆角是否符合规范'
-                ),
-                e('button', {
-                  className: `btn btn-primary ${isReviewing ? 'opacity-50 cursor-not-allowed' : ''}`,
-                  onClick: handleStartRadiusReview,
-                  disabled: isReviewing
-                }, isReviewing ? '检查中...' : '开始检查')
+                selection.length === 0 
+                  ? e('p', { className: 'mb-4 text-sm text-gray-500' }, 
+                      '请选择需要检查的元素，点击重新检查按钮开始分析'
+                    )
+                  : isReviewing
+                    ? e('div', { className: 'loading' },
+                        e('div', { className: 'loading-spinner' }),
+                        e('span', null, '正在分析圆角分布情况...')
+                      )
+                    : e('p', { className: 'mb-4 text-sm text-gray-500' }, 
+                        `已选择 ${selection.length} 个元素${radiusStats ? '，分析完成' : '，点击重新检查按钮开始分析'}`
+                      )
               )
             ),
 
             // 统计结果区域
-            analysis && e('div', { className: 'section' },
+            !isReviewing && radiusStats && e('div', { className: 'section' },
               e('div', { className: 'section-header' },
                 e('h2', { className: 'section-title' }, '圆角分布统计'),
                 e('span', { className: 'badge badge-purple' }, 
-                  `${analysis.uniqueValues} 种圆角值`
+                  `${radiusStats.uniqueValues} 种圆角值`
                 )
               ),
               e('div', { className: 'section-content' },
                 e('div', { className: 'stats' },
                   e('div', { className: 'stat-item' },
                     e('div', { className: 'stat-value' }, 
-                      `${analysis.mostCommonRadius}px`
+                      `${radiusStats.mostCommonRadius}px`
                     ),
                     e('div', { className: 'stat-label' }, '最常用圆角')
                   ),
                   e('div', { className: 'stat-item' },
                     e('div', { className: 'stat-value' }, 
-                      analysis.anomalies.length
+                      radiusStats.anomalies ? radiusStats.anomalies.length : 0
                     ),
                     e('div', { className: 'stat-label' }, '异常值数量')
                   )
@@ -903,19 +909,34 @@
                 e('div', { className: 'mt-4' },
                   e('div', { className: 'text-sm font-medium mb-2' }, '圆角值分布：'),
                   e('div', { className: 'space-y-2' },
-                    Object.entries(analysis.distribution).map(([radius, count]) =>
+                    Object.entries(radiusStats.distribution).map(([radius, data], index) =>
                       e('div', {
                         key: radius,
                         className: `flex items-center justify-between p-2 bg-gray-50 rounded ${!Number.isInteger(Number(radius)) ? 'border-2 border-yellow-400' : ''}`
                       },
-                        e('span', { className: 'text-sm' }, 
-                          `${radius}px`,
-                          !Number.isInteger(Number(radius)) && e('span', {
-                            className: 'ml-2 text-xs text-yellow-600'
-                          }, '(小数值)')
-                        ),
-                        e('span', { className: 'text-sm text-gray-500' },
-                          `${count} 个元素 (${Math.round(count / analysis.total * 100)}%)`
+                        e('div', { className: 'flex-1' },
+                          e('div', { className: 'flex items-center justify-between' },
+                            e('div', { className: 'flex items-center gap-2' },
+                              e('span', { className: 'text-sm' }, 
+                                `${radius}px`,
+                                !Number.isInteger(Number(radius)) && e('span', {
+                                  className: 'ml-2 text-xs text-yellow-600'
+                                }, '(小数值)')
+                              ),
+                              e('span', { className: 'text-sm text-gray-500' },
+                                `${Math.round(data.count / radiusStats.total * 100)}%`
+                              )
+                            ),
+                            e('button', {
+                              className: 'go-button text-xs py-1 px-3',
+                              onClick: () => handleGoToNode(radius, data.nodes)
+                            },
+                              e('span', null, '定位 '),
+                              e('span', { className: 'text-xs opacity-75' },
+                                `(${((nodeIndices[radius] || 0) + 1)}/${data.nodes.length})`
+                              )
+                            )
+                          )
                         )
                       )
                     )
@@ -925,16 +946,16 @@
             ),
 
             // 异常值列表
-            analysis && analysis.anomalies.length > 0 && e('div', { className: 'section' },
+            !isReviewing && radiusStats && radiusStats.anomalies && radiusStats.anomalies.length > 0 && e('div', { className: 'section' },
               e('div', { className: 'section-header' },
                 e('h2', { className: 'section-title' }, '异常圆角'),
                 e('span', { className: 'badge badge-purple' }, 
-                  `${analysis.anomalies.length} 个异常`
+                  `${radiusStats.anomalies.length} 个异常`
                 )
               ),
               e('div', { className: 'section-content' },
                 e('div', { className: 'space-y-2' },
-                  analysis.anomalies.map((item, index) =>
+                  radiusStats.anomalies.map((item, index) =>
                     e('div', {
                       key: index,
                       className: `p-3 bg-white rounded-lg shadow border ${item.hasDecimal ? 'border-yellow-400' : 'border-gray-200'}`
@@ -948,7 +969,7 @@
                               className: 'ml-1 text-xs text-yellow-600'
                             }, '(小数值)'),
                             e('span', { className: 'text-gray-400 mx-2' }, '|'),
-                            `建议值: ${analysis.mostCommonRadius}px`
+                            `建议值: ${radiusStats.mostCommonRadius}px`
                           )
                         ),
                         e('button', {
