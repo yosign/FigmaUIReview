@@ -18,7 +18,7 @@ interface StyleInfo {
 }
 
 interface UIMessage {
-  type: 'init' | 'start-review' | 'get-text-styles' | 'fix-text' | 'go-to-node';
+  type: 'init' | 'start-review' | 'get-text-styles' | 'fix-text' | 'go-to-node' | 'start-radius-review' | 'fix-radius';
   selectedStyles?: string[];
   nodesToReview?: string[];
   nodeId?: string;
@@ -33,6 +33,18 @@ interface TextCheckResult {
     word: string;
     index: number;
     suggestion: string;
+  }>;
+}
+
+interface RadiusCheckResult {
+  nodeId: string;
+  nodeName: string;
+  nodeType: string;
+  cornerRadius: number | number[];
+  issues: Array<{
+    type: 'inconsistent' | 'non-standard';
+    current: number | number[];
+    suggestion: number;
   }>;
 }
 
@@ -67,6 +79,14 @@ const PREPOSITIONS = new Set([
   'across', 'around', 'behind', 'beside', 'beyond',
   'inside', 'outside', 'near', 'off', 'toward', 'towards'
 ]);
+
+// 标准圆角值
+const STANDARD_RADIUS = [0, 2, 4, 8, 12, 16, 24, 32];
+
+// 检查圆角值是否标准
+function isStandardRadius(radius: number): boolean {
+  return STANDARD_RADIUS.includes(radius);
+}
 
 // 获取所有文本样式
 async function getTextStyles(): Promise<StyleInfo[]> {
@@ -200,7 +220,96 @@ async function goToNode(nodeId: string) {
   }
 }
 
-// 监听来自UI的消息
+// 检查节点的圆角
+async function checkNodeRadius(node: SceneNode): Promise<RadiusCheckResult | null> {
+  // 只检查矩形、自动布局和框架
+  if (!('cornerRadius' in node)) return null;
+
+  const issues: RadiusCheckResult['issues'] = [];
+  const radius = (node as any).cornerRadius;
+  
+  if (radius === undefined) return null;
+
+  // 检查是否使用了混合圆角
+  if (Array.isArray(radius)) {
+    const uniqueRadii = [...new Set(radius)];
+    if (uniqueRadii.length > 1) {
+      issues.push({
+        type: 'inconsistent',
+        current: radius,
+        suggestion: radius[0] // 建议使用第一个值
+      });
+    }
+    // 检查每个圆角值是否标准
+    radius.forEach(r => {
+      if (!isStandardRadius(r)) {
+        const closestStandard = STANDARD_RADIUS.reduce((prev, curr) =>
+          Math.abs(curr - r) < Math.abs(prev - r) ? curr : prev
+        );
+        issues.push({
+          type: 'non-standard',
+          current: r,
+          suggestion: closestStandard
+        });
+      }
+    });
+  } else if (typeof radius === 'number' && radius !== 0) {
+    // 检查单个圆角值是否标准
+    if (!isStandardRadius(radius)) {
+      const closestStandard = STANDARD_RADIUS.reduce((prev, curr) =>
+        Math.abs(curr - radius) < Math.abs(prev - radius) ? curr : prev
+      );
+      issues.push({
+        type: 'non-standard',
+        current: radius,
+        suggestion: closestStandard
+      });
+    }
+  }
+
+  if (issues.length === 0) return null;
+
+  return {
+    nodeId: node.id,
+    nodeName: node.name,
+    nodeType: node.type,
+    cornerRadius: radius,
+    issues
+  };
+}
+
+// 递归检查节点的圆角
+async function checkRadiusRecursively(node: BaseNode, results: RadiusCheckResult[]) {
+  if ('cornerRadius' in node) {
+    const result = await checkNodeRadius(node as SceneNode);
+    if (result) {
+      results.push(result);
+    }
+  }
+
+  if ('children' in node) {
+    for (const child of node.children) {
+      await checkRadiusRecursively(child, results);
+    }
+  }
+}
+
+// 修复圆角问题
+async function fixNodeRadius(nodeId: string, suggestion: number) {
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (node && 'cornerRadius' in node) {
+    const targetNode = node as any;
+    if (Array.isArray(targetNode.cornerRadius)) {
+      // 如果是混合圆角，统一设置为建议值
+      targetNode.cornerRadius = [suggestion, suggestion, suggestion, suggestion];
+    } else {
+      targetNode.cornerRadius = suggestion;
+    }
+    figma.notify('Corner radius updated successfully');
+  }
+}
+
+// 修改消息处理器
 figma.ui.onmessage = async (msg: UIMessage) => {
   switch (msg.type) {
     case 'init':
@@ -224,6 +333,47 @@ figma.ui.onmessage = async (msg: UIMessage) => {
     case 'go-to-node':
       if (msg.nodeId) {
         await goToNode(msg.nodeId);
+      }
+      break;
+    case 'start-radius-review':
+      const radiusResults: RadiusCheckResult[] = [];
+      const selection = figma.currentPage.selection;
+      
+      if (selection.length === 0) {
+        figma.notify('Please select at least one element to review');
+        return;
+      }
+
+      for (const node of selection) {
+        await checkRadiusRecursively(node, radiusResults);
+      }
+
+      figma.ui.postMessage({
+        type: 'radius-review-complete',
+        results: radiusResults
+      });
+
+      if (radiusResults.length > 0) {
+        figma.notify(`Found ${radiusResults.length} radius issues`);
+      } else {
+        figma.notify('No radius issues found');
+      }
+      break;
+    case 'fix-radius':
+      if (msg.nodeId && typeof msg.suggestion === 'number') {
+        await fixNodeRadius(msg.nodeId, msg.suggestion);
+        
+        // 重新检查并更新UI
+        const radiusResults: RadiusCheckResult[] = [];
+        const selection = figma.currentPage.selection;
+        for (const node of selection) {
+          await checkRadiusRecursively(node, radiusResults);
+        }
+        
+        figma.ui.postMessage({
+          type: 'radius-review-complete',
+          results: radiusResults
+        });
       }
       break;
     default:
