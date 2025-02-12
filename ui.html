@@ -692,14 +692,27 @@
             // 配置区域
             e('div', { className: 'section' },
               e('div', { className: 'section-header' },
-                e('h2', { className: 'section-title' }, '配置')
+                e('h2', { className: 'section-title' }, '文本规范检查')
               ),
               e('div', { className: 'section-content' },
                 e('p', { className: 'text-sm text-muted mb-2' }, '选择要检查的文本样式'),
                 e('div', null,
                   textStyles.length === 0 
-                    ? e('div', { className: 'empty-state' },
-                        e('p', null, '未找到文本样式')
+                    ? e('div', { className: 'style-list' },
+                        e('label', {
+                          key: 'no-style',
+                          className: 'style-item selected',
+                        },
+                          e('input', {
+                            type: 'checkbox',
+                            className: 'style-checkbox',
+                            checked: true,
+                            disabled: true,
+                          }),
+                          e('span', {
+                            className: 'style-name text-gray-600'
+                          }, 'No Style Text')
+                        )
                       )
                     : e('div', { className: 'style-list' },
                         [...textStyles, NO_STYLE_OPTION].map(style =>

@@ -448,8 +448,8 @@ function handleSelectionCheck() {
     });
 }
 // 开始审查处理
-function handleStartReview() {
-    return __awaiter(this, arguments, void 0, function* (selectedStyles = [], nodesToReview = []) {
+function handleStartReview(selectedStyles = [], nodesToReview = []) {
+    return __awaiter(this, void 0, void 0, function* () {
         const selection = figma.currentPage.selection;
         if (selection.length === 0) {
             figma.notify('Please select at least one element to review');
